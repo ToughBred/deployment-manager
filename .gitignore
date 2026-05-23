@@ -1,0 +1,4 @@
+internal/config/config.json
+scripts/install.sh
+systemd
+.idea

@@ -1,0 +1,48 @@
+services:
+  app:
+    image: ghcr.io/repoName/imageName:dev-latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4801:8080"
+    env_file:
+      - /.env
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # The migrate service runs migrations and exits.
+  # The agent runs it with `docker compose run --rm migrate`.
+  # It shares the same image as app — migrations are bundled in the binary.
+  migrate:
+    image: ghcr.io/repoName/imageName:dev-latest
+    env_file:
+      - ./.env.runtime
+    # Override the default entrypoint with the migration command.
+    command: ["./app", "migrate", "up"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    env_file:
+      - ./.env.runtime
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  db_data:

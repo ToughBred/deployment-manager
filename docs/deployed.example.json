@@ -1,0 +1,7 @@
+{
+  "environment": "production",
+  "image": "ghcr.io/repoName/imageName:prod-latest",
+  "manifest_digest": "sha256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f60001",
+  "git_sha": "9b473e0",
+  "deployed_at": "2026-05-22T10:02:34Z"
+}
