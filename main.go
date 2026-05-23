@@ -51,6 +51,9 @@ func run() error {
 	// --- Flags ---
 	configPath := flag.String("config", "missing config file", "path to agent config file")
 	flag.Parse()
+	if *configPath == "" {
+		return fmt.Errorf("missing config path")
+	}
 
 	// --- Logging ---
 	// Set up structured logging first so all subsequent errors are structured.

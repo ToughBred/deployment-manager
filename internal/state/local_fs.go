@@ -40,11 +40,10 @@ func (m *managerWithLocalFileSystem) LoadPrevious() (DeploymentState, error) {
 func (m *managerWithLocalFileSystem) CommitDeployed(s DeploymentState) error {
 	// Promote current → previous before writing new current.
 	if err := m.promoteToPrevious(); err != nil {
-		if errors.Is(err, ErrFileNotFound) {
-			// No current state to promote — this is the first deployment.
-			return nil
+		if !errors.Is(err, ErrFileNotFound) {
+			return fmt.Errorf("promote previous state: %w", err)
 		}
-		return fmt.Errorf("promote previous state: %w", err)
+		// No current state to promote — this is the first deployment.
 	}
 	return m.writeAtomic(m.deployedPath(), s)
 }

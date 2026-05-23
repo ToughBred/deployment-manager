@@ -127,7 +127,15 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 	}
 
 	// --- Step 3: Drift detection ---
-	if !r.hasDrift(currentState, desiredState) {
+	hasDrift, err := r.hasDrift(ctx, currentState, desiredState)
+	if err != nil {
+		r.log.Error("failed to observe runtime state",
+			"phase", logger.PhaseDrift,
+			"error", err,
+		)
+		return
+	}
+	if !hasDrift {
 		r.log.Debug("no drift detected",
 			"phase", logger.PhaseNoop,
 			"digest", desiredState.ManifestDigest,
@@ -177,8 +185,24 @@ func (r *Reconciler) fetchDesiredState(ctx context.Context) (meta git_provider.D
 // can point to different images over time.
 //
 // If actual is nil (no state persisted), drift always exists (first deploy).
-func (r *Reconciler) hasDrift(actual state.DeploymentState, desired git_provider.DeploymentMetadata) bool {
-	return actual.ManifestDigest != desired.ManifestDigest
+func (r *Reconciler) hasDrift(ctx context.Context, actual state.DeploymentState, desired git_provider.DeploymentMetadata) (bool, error) {
+	if actual.ManifestDigest != desired.ManifestDigest {
+		return true, nil
+	}
+
+	observer, ok := r.deployOrchestrator.(orchestrator.RuntimeObserver)
+	if !ok {
+		return false, nil
+	}
+
+	runtimeState, err := observer.CurrentRuntimeState(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !runtimeState.Running {
+		return true, nil
+	}
+	return runtimeState.ManifestDigest != desired.ManifestDigest, nil
 }
 
 // deployedDigest safely returns the digest of the current state.

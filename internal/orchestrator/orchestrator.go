@@ -35,3 +35,16 @@ var errorsThatCanTriggerRollback = []error{
 type Orchestrator interface {
 	Deploy(ctx context.Context, meta git_provider.DeploymentMetadata) error
 }
+
+// RuntimeState is the reconciler's view of the currently running application.
+type RuntimeState struct {
+	Running        bool
+	ManifestDigest string
+}
+
+// RuntimeObserver can be implemented by orchestrators that can report the
+// active runtime state. Reconcilers use it to repair runtime drift when
+// persisted state still matches the desired release.
+type RuntimeObserver interface {
+	CurrentRuntimeState(ctx context.Context) (RuntimeState, error)
+}
