@@ -25,6 +25,7 @@ var (
 	errImagePullFailed   = errors.New("error encountered during image pull")
 	errRestartFailed     = errors.New("failed to restart service")
 	errHealthCheckFailed = errors.New("new deployment failed health check")
+	errComposeEnvFailed  = errors.New("failed to update compose env file")
 )
 
 var errorsThatCanTriggerRollback = []error{
