@@ -99,7 +99,9 @@ func (sl *Slack) send(notification slackNotification) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	body, err := json.Marshal(notification)
+	payload := buildSlackMessage(notification)
+
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal notification: %w", err)
 	}
@@ -143,6 +145,10 @@ func buildSlackMessage(msg slackNotification) map[string]interface{} {
 	lagosTime = time.Now().In(location).Format("Monday, 02 January 2006 03:04 pm")
 
 	return map[string]interface{}{
+		"text": fmt.Sprintf(
+			"Deployment on %s",
+			msg.Environment,
+		),
 		"blocks": []slackBlock{
 			{
 				Type: "header",
@@ -155,7 +161,7 @@ func buildSlackMessage(msg slackNotification) map[string]interface{} {
 				Type: "section",
 				Text: &slackText{
 					Type: "plain_text",
-					Text: fmt.Sprintf("Environment: `%s`", msg.Environment),
+					Text: fmt.Sprintf("Environment: %s", msg.Environment),
 				},
 			},
 			{
