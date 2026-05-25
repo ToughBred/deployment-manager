@@ -115,20 +115,21 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("error parsing config file %q: %w", path, err)
 	}
 
+	if cfg.PollIntervalInSeconds < 10 {
+		cfg.PollIntervalInSeconds = 60
+	}
 	for i := range cfg.Environments {
 		cfg.Environments[i].fillDefaultOnZeroValues()
+	}
+
+	if cfg.GitHub.Token == "" {
+		cfg.GitHub.Token = os.Getenv("GITHUB_TOKEN")
 	}
 
 	return &cfg, cfg.validate()
 }
 
 func (cfg Config) validate() error {
-	if cfg.GitHub.Token == "" {
-		cfg.GitHub.Token = os.Getenv("GITHUB_TOKEN")
-		if cfg.GitHub.Token == "" {
-			return fmt.Errorf("GITHUB_TOKEN environment variable not set")
-		}
-	}
 	if cfg.GitHub.Owner == "" {
 		return fmt.Errorf("github.owner is required")
 	}

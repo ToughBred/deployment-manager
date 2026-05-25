@@ -35,6 +35,7 @@ var errorsThatCanTriggerRollback = []error{
 // Orchestrator orchestrates deployments for a single environment.
 type Orchestrator interface {
 	Deploy(ctx context.Context, meta git_provider.DeploymentMetadata) error
+	RuntimeObserver
 }
 
 // RuntimeState is the reconciler's view of the currently running application.

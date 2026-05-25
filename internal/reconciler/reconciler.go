@@ -186,10 +186,18 @@ func (r *Reconciler) fetchDesiredState(ctx context.Context) (meta git_provider.D
 //
 // If actual is nil (no state persisted), drift always exists (first deploy).
 func (r *Reconciler) hasDrift(ctx context.Context, actual state.DeploymentState, desired git_provider.DeploymentMetadata) (bool, error) {
+	// GitHub says desired digest = sha-new
+	// state file says deployed digest = sha-old
+	// => drift detected
 	if actual.ManifestDigest != desired.ManifestDigest {
 		return true, nil
 	}
 
+	// Check runtime drift
+	// GitHub says desired digest = sha-new
+	// state file says deployed digest = sha-new
+	// actual Docker container is stopped/missing
+	// => drift detected
 	observer, ok := r.deployOrchestrator.(orchestrator.RuntimeObserver)
 	if !ok {
 		return false, nil
