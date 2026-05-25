@@ -36,20 +36,19 @@ type githubClient struct {
 // token may be empty for public repositories (unauthenticated: 60 req/hr).
 // For production use, always provide a token (authenticated: 5000 req/hr).
 func NewGithubClient(owner, repo, token string) (GitProvider, error) {
-	httpClient := &http.Client{
-		Timeout: defaultHTTPTimeout,
-	}
+	var httpClient *http.Client
 
 	if token != "" {
 		// oauth2.StaticTokenSource produces a transport that injects
 		// Authorization: Bearer <token> on every request.
 		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 		httpClient = oauth2.NewClient(context.Background(), ts)
+		httpClient.Timeout = defaultHTTPTimeout
 	}
 
 	ghc, err := github.NewClient(github.WithHTTPClient(httpClient))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create new github client")
+		return nil, fmt.Errorf("failed to create new github client: %w", err)
 	}
 
 	return &githubClient{
@@ -133,7 +132,7 @@ func (c *githubClient) downloadMetadata(ctx context.Context, assetID int64) (met
 		c.owner,
 		c.repo,
 		assetID,
-		http.DefaultClient, // follow S3 redirect without auth headers
+		c.client.Client(), // documentation say to pass http.Client that performs authenticated request for private repo
 	)
 	if err != nil {
 		return meta, fmt.Errorf("DownloadReleaseAsset %d: %w", assetID, err)
