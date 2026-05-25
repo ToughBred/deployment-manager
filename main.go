@@ -74,7 +74,10 @@ func run() error {
 
 	// --- GitHub client (shared across all reconcilers) ---
 	// A single client is safe for concurrent use since it holds no per-request state.
-	ghClient := git_provider.NewGithubClient(cfg.GitHub.Owner, cfg.GitHub.Repo, cfg.GitHub.Token)
+	ghClient, err := git_provider.NewGithubClient(cfg.GitHub.Owner, cfg.GitHub.Repo, cfg.GitHub.Token)
+	if err != nil {
+		return fmt.Errorf("create github client: %w", err)
+	}
 
 	// --- Root context with signal cancellation ---
 	// The context is cancelled on SIGTERM or SIGINT, which propagates to all
