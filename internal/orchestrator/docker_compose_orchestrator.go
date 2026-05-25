@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/toughbred/deployment-manager/internal/config"
@@ -16,11 +19,11 @@ import (
 )
 
 type dockerCompose struct {
-	env      config.EnvironmentConfig
-	compose  dockerComposeExecutor
-	stateMgr state.Manager
-	log      *slog.Logger
-	notifier notifier.Notifier
+	env             config.EnvironmentConfig
+	composeExecutor dockerComposeExecutor
+	stateMgr        state.Manager
+	log             *slog.Logger
+	notifier        notifier.Notifier
 }
 
 // NewDockerCompose creates a Orchestrator for the given environment.
@@ -28,16 +31,20 @@ func NewDockerCompose(
 	env config.EnvironmentConfig,
 	stateMgr state.Manager,
 	notifier notifier.Notifier, log *slog.Logger) Orchestrator {
-	envFiles := []string{env.RuntimeEnvFilePath, env.DeployEnvFilePath}
-	compose := newDockerComposeExecutor(env.ComposeFilePath, envFiles, log)
+	envFiles := []string{env.ComposeEnvFilePath}
+	composeExecutor := newDockerComposeExecutor(env.ComposeFilePath, envFiles, env.AppService, log)
 
 	return &dockerCompose{
-		env:      env,
-		compose:  compose,
-		stateMgr: stateMgr,
-		log:      log,
-		notifier: notifier,
+		env:             env,
+		composeExecutor: composeExecutor,
+		stateMgr:        stateMgr,
+		log:             log,
+		notifier:        notifier,
 	}
+}
+
+func (d *dockerCompose) CurrentRuntimeState(ctx context.Context) (RuntimeState, error) {
+	return d.composeExecutor.CurrentRuntimeState(ctx)
 }
 
 // Deploy executes a full deployment for the given metadata.
@@ -84,39 +91,57 @@ func (d *dockerCompose) Deploy(ctx context.Context, meta git_provider.Deployment
 		return fmt.Errorf("rollback failed: no previous deployment state (reason: %s)", "previous state file not found")
 	}
 
+	defer func() {
+		if err = d.composeExecutor.PruneDanglingImages(ctx); err != nil {
+			d.log.Error("failed to prune dangling images",
+				"phase", logger.PhaseCommit, "error", err)
+		}
+	}()
+
 	rollbackState, err := d.rollback(ctx, previousState, meta.ManifestDigest, err.Error())
 	if err == nil {
-		d.notifier.NotifyOnDeploymentFailed(meta, fmt.Errorf("ROLLBACK FAILED: %w", err))
-		return fmt.Errorf("deployment and rollback failed: %w", err)
+		d.notifier.NotifyOnDeploymentSuccess(rollbackState)
+		return nil
 	}
 
-	d.notifier.NotifyOnDeploymentSuccess(rollbackState)
-	return nil
+	d.notifier.NotifyOnDeploymentFailed(meta, fmt.Errorf("ROLLBACK FAILED: %w", err))
+	return fmt.Errorf("deployment and rollback failed: %w", err)
 }
 
 func (d *dockerCompose) deploy(ctx context.Context, meta git_provider.DeploymentMetadata) (newState state.DeploymentState, err error) {
 
-	// --- Phase 1: Pull image ---
+	// --- Phase 1: Update compose env ---
+	d.log.Info("updating compose image tag", "phase", logger.PhasePull, "image_tag", meta.ImageTag)
+	if err := d.updateComposeImageTag(meta); err != nil {
+		return newState, errors.Join(errComposeEnvFailed, err)
+	}
+
+	// --- Phase 2: Pull image ---
 	d.log.Info("pulling image", "phase", logger.PhasePull, "image", meta.Image)
-	if err := d.compose.PullImage(ctx, d.env.AppService); err != nil {
+	if err := d.composeExecutor.PullImage(ctx, d.env.AppService); err != nil {
 		return newState, errors.Join(errImagePullFailed, err)
 	}
 
-	// --- Phase 2: Run migrations ---
+	// --- Phase 3: Run migrations ---
 	if d.env.MigrationService != "" {
 		d.log.Info("running migrations", "phase", logger.PhaseMigration, "service", d.env.MigrationService)
-		if err = d.compose.RunMigrations(ctx, d.env.MigrationService); err != nil {
+
+		if err := d.composeExecutor.PullImage(ctx, d.env.MigrationService); err != nil {
+			return newState, errors.Join(errImagePullFailed, err)
+		}
+
+		if err = d.composeExecutor.RunMigrations(ctx, d.env.MigrationService); err != nil {
 			return newState, errors.Join(errMigrationFailed, err)
 		}
 	}
 
-	// --- Phase 3: Restart application ---
+	// --- Phase 4: Restart application ---
 	d.log.Info("restarting application", "phase", logger.PhaseRestart, "service", d.env.AppService)
-	if err = d.compose.RestartApp(ctx, d.env.AppService); err != nil {
+	if err = d.composeExecutor.RestartApp(ctx, d.env.AppService); err != nil {
 		return newState, errors.Join(errRestartFailed, err)
 	}
 
-	// --- Phase 4: Health check ---
+	// --- Phase 5: Health check ---
 	d.log.Info("waiting for health",
 		"phase", logger.PhaseHealthCheck,
 		"url", d.env.HealthCheckURL,
@@ -132,15 +157,16 @@ func (d *dockerCompose) deploy(ctx context.Context, meta git_provider.Deployment
 		return newState, errors.Join(errHealthCheckFailed, err)
 	}
 
-	// --- Phase 5: Commit state ---
+	// --- Phase 6: Commit state ---
 	newState = state.DeploymentState{
 		Environment:    d.env.Name,
 		Image:          meta.Image,
+		ImageTag:       meta.ImageTag,
 		ManifestDigest: meta.ManifestDigest,
 		GitSHA:         meta.GitSHA,
 		DeployedAt:     time.Now().UTC(),
 	}
-	if err := d.stateMgr.CommitDeployed(newState); err != nil {
+	if err = d.stateMgr.CommitDeployed(newState); err != nil {
 		// State commit failure is non-fatal from a runtime perspective
 		// (the app is running and healthy), but it means the agent will
 		// re-deploy on next poll. Log loudly
@@ -157,6 +183,97 @@ func (d *dockerCompose) deploy(ctx context.Context, meta git_provider.Deployment
 	return newState, nil
 }
 
+func (d *dockerCompose) updateComposeImageTag(meta git_provider.DeploymentMetadata) error {
+	if d.env.ComposeEnvFilePath == "" {
+		return fmt.Errorf("compose env file path is required")
+	}
+	if meta.ImageTag == "" {
+		return fmt.Errorf("deployment metadata image_tag is required")
+	}
+	return upsertEnvFileValue(d.env.ComposeEnvFilePath, "IMAGE_TAG", meta.ImageTag)
+}
+
+func writeAtomic(path string, data []byte) error {
+
+	// Write to a temp file in the same directory so the rename is atomic
+	// (both source and destination are on the same filesystem).
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("write temp state %q: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp) // best-effort cleanup
+		return fmt.Errorf("rename state %q → %q: %w", tmp, path, err)
+	}
+	return nil
+}
+
+func upsertEnvFileValue(path, key, value string) error {
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read env file %q: %w", path, err)
+	}
+
+	// read file content into lines
+	// file content is expected to be lines of key=value text
+	content := string(data)
+	lines := []string{}
+	if content != "" {
+		lines = strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	}
+	replacement := key + "=" + value
+	found := false
+
+	// if key already exist with an existing value,
+	// replace it with replacement
+	for i, line := range lines {
+		if envLineKey(line) != key {
+			continue
+		}
+		lines[i] = replacement
+		found = true
+		break
+	}
+
+	// if key doesn't already exist, append replacement
+	if !found {
+		if content == "" {
+			lines = []string{replacement}
+		} else {
+			lines = append(lines, replacement)
+		}
+	}
+
+	updated := strings.Join(lines, "\n")
+	if !strings.HasSuffix(updated, "\n") {
+		updated += "\n"
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return fmt.Errorf("create env file dir %q: %w", filepath.Dir(path), err)
+	}
+
+	err = writeAtomic(path, []byte(updated))
+	if err != nil {
+		return fmt.Errorf("write env file %q: %w", path, err)
+	}
+
+	return nil
+}
+
+func envLineKey(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return ""
+	}
+	trimmed = strings.TrimPrefix(trimmed, "export ")
+	before, _, ok := strings.Cut(trimmed, "=")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(before)
+}
+
 // rollback restores the previous deployment. It is called automatically
 // when a deployment fails after the restart phase.
 //
@@ -168,8 +285,8 @@ func (d *dockerCompose) deploy(ctx context.Context, meta git_provider.Deployment
 //
 // If rollback itself fails, we log loudly but cannot do anything further
 // automatically — manual intervention is required.
-func (d *dockerCompose) rollback(ctx context.Context, previous state.DeploymentState, failedDigest, reason string) (rollbackState state.DeploymentState, err error) {
-	d.log.Warn("initiating rollback",
+func (d *dockerCompose) rollback(ctx context.Context, previousState state.DeploymentState, failedDigest, reason string) (rollbackState state.DeploymentState, err error) {
+	d.log.Info("initiating rollback",
 		"phase", logger.PhaseRollback,
 		"reason", reason,
 		"failed_digest", failedDigest,
@@ -177,9 +294,22 @@ func (d *dockerCompose) rollback(ctx context.Context, previous state.DeploymentS
 
 	d.log.Info("rolling back to previous version",
 		"phase", logger.PhaseRollback,
-		"target_digest", previous.ManifestDigest,
-		"target_git_sha", previous.GitSHA,
+		"target_digest", previousState.ManifestDigest,
+		"target_git_sha", previousState.GitSHA,
 	)
+
+	previousStateMeta := git_provider.DeploymentMetadata{
+		Environment:    previousState.Environment,
+		Image:          previousState.Image,
+		ImageTag:       previousState.ImageTag,
+		ManifestDigest: previousState.ManifestDigest,
+		GitSHA:         previousState.GitSHA,
+		CreatedAt:      previousState.DeployedAt,
+	}
+	err = d.updateComposeImageTag(previousStateMeta)
+	if err != nil {
+		d.log.Warn("could not update compose image tag", "error", err)
+	}
 
 	// Restart with previous image. The previous image should be in the local
 	// Docker cache. If docker-compose.yml still references the old tag, compose
@@ -188,7 +318,7 @@ func (d *dockerCompose) rollback(ctx context.Context, previous state.DeploymentS
 	// Note: This assumes the image tag in docker-compose.yml was the mutable
 	// tag (e.g. :dev-latest). For immutable digest-based deployments, the
 	// compose file would need to be updated here. This is a future improvement.
-	if err := d.compose.RestartApp(ctx, d.env.AppService); err != nil {
+	if err := d.composeExecutor.RestartApp(ctx, d.env.AppService); err != nil {
 		d.log.Error("rollback restart failed — manual intervention required",
 			"phase", logger.PhaseRollback, "error", err)
 		return rollbackState, fmt.Errorf("rollback restart failed: %w (original reason: %s)", err, reason)
@@ -210,9 +340,10 @@ func (d *dockerCompose) rollback(ctx context.Context, previous state.DeploymentS
 	// Commit rollback state with audit trail.
 	rollbackState = state.DeploymentState{
 		Environment:    d.env.Name,
-		Image:          previous.Image,
-		ManifestDigest: previous.ManifestDigest,
-		GitSHA:         previous.GitSHA,
+		Image:          previousState.Image,
+		ImageTag:       previousState.ImageTag,
+		ManifestDigest: previousState.ManifestDigest,
+		GitSHA:         previousState.GitSHA,
 		DeployedAt:     time.Now().UTC(),
 		RollbackFrom:   failedDigest, // record what we rolled back from
 	}
@@ -224,7 +355,7 @@ func (d *dockerCompose) rollback(ctx context.Context, previous state.DeploymentS
 
 	d.log.Info("rollback completed successfully",
 		"phase", logger.PhaseRollback,
-		"restored_digest", previous.ManifestDigest,
+		"restored_digest", previousState.ManifestDigest,
 		"failed_digest", failedDigest,
 		"reason", reason,
 	)

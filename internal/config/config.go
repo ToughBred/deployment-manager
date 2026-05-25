@@ -50,22 +50,16 @@ type EnvironmentConfig struct {
 	// ComposeFilePath is the absolute path to the docker-compose.yml for this env.
 	ComposeFilePath string `json:"compose_file_path"`
 
-	// RuntimeEnvFilePath is sourced by docker compose for runtime configuration.
-	RuntimeEnvFilePath string `json:"runtime_env_file_path"`
-
-	// DeployEnvFilePath is loaded by the agent for deployment-time variables
-	// (e.g. migration DSN, registry credentials).
-	DeployEnvFilePath string `json:"deploy_env_file_path"`
+	// ComposeEnvFilePath is loaded by the deployment-manager for
+	// docker compose deployment-time variables
+	// (e.g. migration DSN, registry credentials, image-tag).
+	ComposeEnvFilePath string `json:"compose_env_file_path"`
 
 	// StateDir is the directory where deployed.json and previous.json live.
 	StateDir string `json:"state_dir"`
 
 	// HealthCheckURL is the HTTP endpoint polled to verify a deployment.
 	HealthCheckURL string `json:"health_check_url"`
-
-	// Image is the full image reference for this environment.
-	// e.g. "ghcr.io/repoName/imageName:dev-latest"
-	Image string `json:"image"`
 
 	// MigrationService is the docker compose service name that runs migrations.
 	// If empty, migrations are skipped.
@@ -121,8 +115,15 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("error parsing config file %q: %w", path, err)
 	}
 
+	if cfg.PollIntervalInSeconds < 10 {
+		cfg.PollIntervalInSeconds = 60
+	}
 	for i := range cfg.Environments {
 		cfg.Environments[i].fillDefaultOnZeroValues()
+	}
+
+	if cfg.GitHub.Token == "" {
+		cfg.GitHub.Token = os.Getenv("GITHUB_TOKEN")
 	}
 
 	return &cfg, cfg.validate()
@@ -145,14 +146,14 @@ func (cfg Config) validate() error {
 		if e.ComposeFilePath == "" {
 			return fmt.Errorf("environment %q: compose_file is required", e.Name)
 		}
+		if e.ComposeEnvFilePath == "" {
+			return fmt.Errorf("environment %q: compose_env_file_path is required", e.Name)
+		}
 		if e.StateDir == "" {
 			return fmt.Errorf("environment %q: state_dir is required", e.Name)
 		}
 		if e.HealthCheckURL == "" {
 			return fmt.Errorf("environment %q: healthcheck_url is required", e.Name)
-		}
-		if e.Image == "" {
-			return fmt.Errorf("environment %q: image is required", e.Name)
 		}
 	}
 	return nil

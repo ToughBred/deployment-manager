@@ -34,6 +34,8 @@ type DeploymentState struct {
 	// Image is the full image reference that is deployed.
 	Image string `json:"image"`
 
+	ImageTag string `json:"image_tag"`
+
 	// ManifestDigest is the OCI manifest digest (sha256:...) of the deployed image.
 	// This is the canonical drift-detection key — image tags are mutable,
 	// digests are not.

@@ -481,6 +481,7 @@ func (f *FakeRuntime) Deploy(ctx context.Context, meta git_provider.DeploymentMe
 	return f.stateMgr.CommitDeployed(state.DeploymentState{
 		Environment:    meta.Environment,
 		Image:          meta.Image,
+		ImageTag:       meta.ImageTag,
 		ManifestDigest: meta.ManifestDigest,
 		GitSHA:         meta.GitSHA,
 		DeployedAt:     time.Now().UTC(),
