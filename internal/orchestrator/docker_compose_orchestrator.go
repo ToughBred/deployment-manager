@@ -77,6 +77,12 @@ func (d *dockerCompose) Deploy(ctx context.Context, meta git_provider.Deployment
 	newState, err := d.deploy(ctx, meta)
 	if err == nil {
 		d.notifier.NotifyOnDeploymentSuccess(newState)
+
+		if err = d.composeExecutor.PruneDanglingImages(ctx); err != nil {
+			d.log.Error("failed to prune dangling images",
+				"phase", logger.PhaseCommit, "error", err)
+		}
+
 		return nil
 	}
 
@@ -90,13 +96,6 @@ func (d *dockerCompose) Deploy(ctx context.Context, meta git_provider.Deployment
 			"phase", logger.PhaseRollback)
 		return fmt.Errorf("rollback failed: no previous deployment state (reason: %s)", "previous state file not found")
 	}
-
-	defer func() {
-		if err = d.composeExecutor.PruneDanglingImages(ctx); err != nil {
-			d.log.Error("failed to prune dangling images",
-				"phase", logger.PhaseCommit, "error", err)
-		}
-	}()
 
 	rollbackState, err := d.rollback(ctx, previousState, meta.ManifestDigest, err.Error())
 	if err == nil {
