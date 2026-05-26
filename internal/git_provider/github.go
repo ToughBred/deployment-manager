@@ -16,13 +16,16 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/go-github/v88/github"
 	"golang.org/x/oauth2"
 )
 
 const (
-	assetSizeLimit = 64 * 1024 // 64 KB
+	metadataAsset      = "deployment-metadata.json"
+	defaultHTTPTimeout = 15 * time.Second
+	assetSizeLimit     = 64 * 1024 // 64 KB
 )
 
 // githubClient fetches deployment metadata from GitHub Releases.

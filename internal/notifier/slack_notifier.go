@@ -38,6 +38,7 @@ type slackNotification struct {
 	ManifestDigest string          `json:"manifest_digest"`
 	GitSHA         string          `json:"git_sha"`
 	RollbackFrom   string          `json:"rollback_from,omitempty"`
+	Error          string
 }
 
 func NewSlackNotifier(url string, log *slog.Logger) *Slack {
@@ -57,6 +58,7 @@ func (sl *Slack) NotifyOnNewDeploymentStarted(meta git_provider.DeploymentMetada
 }
 func (sl *Slack) NotifyOnDeploymentFailed(meta git_provider.DeploymentMetadata, err error) {
 	msg := slackNotificationFromDeploymentMeta(meta, deploymentStateFailed)
+	msg.Error = err.Error()
 	err = sl.send(msg)
 	if err != nil {
 		sl.log.Error("Failed to send slack notification", "error", err)
@@ -141,7 +143,10 @@ type slackText struct {
 func buildSlackMessage(msg slackNotification) map[string]interface{} {
 
 	var lagosTime string
-	location, _ := time.LoadLocation("Africa/Lagos")
+	location, err := time.LoadLocation("Africa/Lagos")
+	if err != nil {
+		location = time.UTC
+	}
 	lagosTime = time.Now().In(location).Format("Monday, 02 January 2006 03:04 pm")
 
 	return map[string]interface{}{
@@ -154,14 +159,7 @@ func buildSlackMessage(msg slackNotification) map[string]interface{} {
 				Type: "header",
 				Text: &slackText{
 					Type: "plain_text",
-					Text: fmt.Sprintf(" 🛠️Deployment %s", msg.GitSHA),
-				},
-			},
-			{
-				Type: "section",
-				Text: &slackText{
-					Type: "plain_text",
-					Text: fmt.Sprintf("Environment: %s", msg.Environment),
+					Text: fmt.Sprintf(" 🛠️Environment %s", msg.Environment),
 				},
 			},
 			{
@@ -169,6 +167,13 @@ func buildSlackMessage(msg slackNotification) map[string]interface{} {
 				Text: &slackText{
 					Type: "plain_text",
 					Text: fmt.Sprintf("State: %s", msg.State),
+				},
+			},
+			{
+				Type: "section",
+				Text: &slackText{
+					Type: "plain_text",
+					Text: fmt.Sprintf("Error: %s", msg.Error),
 				},
 			},
 			{
@@ -189,7 +194,7 @@ func buildSlackMessage(msg slackNotification) map[string]interface{} {
 				Type: "section",
 				Text: &slackText{
 					Type: "plain_text",
-					Text: fmt.Sprintf("Image Tag: %s", msg.ImageTag),
+					Text: fmt.Sprintf("Tag: %s", msg.ImageTag),
 				},
 			},
 			{
