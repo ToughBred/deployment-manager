@@ -127,7 +127,7 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 	}
 
 	// --- Step 3: Drift detection ---
-	hasDrift, err := r.hasDrift(ctx, currentState, desiredState)
+	hasDrift, driftReason, err := r.hasDrift(ctx, currentState, desiredState)
 	if err != nil {
 		r.log.Error("failed to observe runtime state",
 			"phase", logger.PhaseDrift,
@@ -146,9 +146,7 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 
 	r.log.Info("drift detected — deployment required",
 		"phase", logger.PhaseDrift,
-		"deployed_digest", deployedDigest(currentState),
-		"desired_digest", desiredState.ManifestDigest,
-		"desired_git_sha", desiredState.GitSHA,
+		"drift_reason", driftReason,
 	)
 
 	// --- Step 4: Deploy ---
@@ -185,12 +183,12 @@ func (r *Reconciler) fetchDesiredState(ctx context.Context) (meta git_provider.D
 // can point to different images over time.
 //
 // If actual is nil (no state persisted), drift always exists (first deploy).
-func (r *Reconciler) hasDrift(ctx context.Context, actual state.DeploymentState, desired git_provider.DeploymentMetadata) (bool, error) {
+func (r *Reconciler) hasDrift(ctx context.Context, actual state.DeploymentState, desired git_provider.DeploymentMetadata) (hasDrift bool, driftReason string, err error) {
 	// GitHub says desired digest = sha-new
 	// state file says deployed digest = sha-old
 	// => drift detected
 	if actual.ManifestDigest != desired.ManifestDigest {
-		return true, nil
+		return true, fmt.Sprintf("current state manifest digest [%s] != desired manifest digest [%s]", actual.ManifestDigest, desired.ManifestDigest), nil
 	}
 
 	// Check runtime drift
@@ -200,17 +198,21 @@ func (r *Reconciler) hasDrift(ctx context.Context, actual state.DeploymentState,
 	// => drift detected
 	observer, ok := r.deployOrchestrator.(orchestrator.RuntimeObserver)
 	if !ok {
-		return false, nil
+		return false, "", nil
 	}
 
 	runtimeState, err := observer.CurrentRuntimeState(ctx)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if !runtimeState.Running {
-		return true, nil
+		return true, "service not running", nil
 	}
-	return runtimeState.ManifestDigest != desired.ManifestDigest, nil
+	if runtimeState.ManifestDigest != desired.ManifestDigest {
+		return true, fmt.Sprintf("runtime manifest digest [%s] != desired manifest digest [%s]", runtimeState.ManifestDigest, desired.ManifestDigest), nil
+	}
+
+	return false, "", nil
 }
 
 // deployedDigest safely returns the digest of the current state.
